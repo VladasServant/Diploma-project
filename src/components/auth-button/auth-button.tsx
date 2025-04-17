@@ -1,6 +1,7 @@
 "use client";
 
 import { signIn, useSession } from "next-auth/react";
+import { Button } from "../ui/button";
 
 export default function AuthButton() {
   const { data: session } = useSession();
@@ -20,11 +21,12 @@ export default function AuthButton() {
   }
 
   return (
-    <button
+    <Button
+      variant="ghost"
       className="px-4 py-2 border rounded-md text-sm"
       onClick={() => signIn("google")}
     >
       Увійти
-    </button>
+    </Button>
   );
 }
