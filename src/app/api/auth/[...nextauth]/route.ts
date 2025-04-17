@@ -1,7 +1,7 @@
 import NextAuth, { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 
-const authOptions: NextAuthOptions = {
+export const authOptions: NextAuthOptions = {
   session: {
     strategy: "jwt",
   },
@@ -31,7 +31,8 @@ const authOptions: NextAuthOptions = {
     },
     async session({ session, token }) {
       if (token && session.user) {
-        session.user.id = token.id as string;
+        session.user.id = token.id;
+        //session.user.role = token.role;
       }
       return session;
     },
