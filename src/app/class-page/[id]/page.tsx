@@ -3,67 +3,57 @@ import { Metadata } from "next";
 import { MainNav } from "@/components/main-nav/main-nav";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { GradesTable } from "@/components/grades-table/grades-table";
+import { prisma } from "@/lib/prisma";
+import { UserRole } from "@prisma/client";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import type { Session } from "next-auth";
 
-const dummyClasses = [
-  {
-    id: "1",
-    name: "Математичний Аналіз I",
-    teacherName: "Проф. Степаненко В. О.",
-    description:
-      "Базовий курс математичного аналізу: границі, похідні, інтеграли.",
-    students: [
-      { id: "101", name: "Іван Петренко" },
-      { id: "102", name: "Олена Ковальчук" },
-      { id: "105", name: "Василь Сидоренко" },
-    ],
-    assignments: [
-      { id: "a1", title: "ДР №1: Границі" },
-      { id: "a2", title: "КР №1: Похідні" },
-      { id: "a3", title: "ДР №2: Інтеграли" },
-    ],
-    grades: [
-      { studentId: "101", assignmentId: "a1", grade: "90" },
-      { studentId: "101", assignmentId: "a2", grade: "85" },
-      { studentId: "102", assignmentId: "a1", grade: "95" },
-      { studentId: "102", assignmentId: "a2", grade: "88" },
-      { studentId: "101", assignmentId: "a3", grade: "75" },
-      { studentId: "105", assignmentId: "a2", grade: "80" },
-      { studentId: "105", assignmentId: "a3", grade: "92" },
-    ],
-  },
-  {
-    id: "2",
-    name: "Основи Програмування (Python)",
-    teacherName: "Доц. Мельник А. П.",
-    description:
-      "Вступ до програмування на мові Python: типи даних, цикли, функції.",
-    students: [
-      { id: "103", name: "Сергій Василенко" },
-      { id: "104", name: "Марія Сидоренко" },
-    ],
-    assignments: [
-      { id: "py1", title: "Завдання 1: Змінні" },
-      { id: "py2", title: "Завдання 2: Цикли" },
-    ],
-    grades: [
-      { studentId: "103", assignmentId: "py1", grade: "100" },
-      { studentId: "104", assignmentId: "py1", grade: "90" },
-      { studentId: "104", assignmentId: "py2", grade: "95" },
-    ],
-  },
-  {
-    id: "3",
-    name: "Всесвітня Історія (World History)",
-    teacherName: "Пані Давис (Ms. Davis)",
-    description: "Огляд ключових подій світової історії.",
-    assignments: [{ id: "h1", title: "Реферат: Стародавній Рим" }],
-    grades: [{ studentId: "110", assignmentId: "h1", grade: "A+" }],
-  },
-];
+async function getClassDetails(classId: string) {
+  try {
+    const classData = await prisma.class.findUnique({
+      where: { id: classId },
+      include: {
+        teacher: { select: { name: true, email: true } },
+        assignments: { orderBy: { title: "asc" } },
+        enrollments: {
+          include: {
+            student: { select: { id: true, name: true } },
+          },
+          orderBy: { student: { name: "asc" } },
+        },
+      },
+    });
 
-async function getDummyClassData(classId: string) {
-  const data = dummyClasses.find((cls) => cls.id === classId);
-  return Promise.resolve(data);
+    if (!classData) return null;
+
+    const studentIds = classData.enrollments.map((en) => en.studentId);
+    const assignmentIds = classData.assignments.map((as) => as.id);
+
+    const grades = await prisma.grade.findMany({
+      where: {
+        studentId: { in: studentIds },
+        assignmentId: { in: assignmentIds },
+      },
+    });
+
+    const students = classData.enrollments.map((en) => en.student);
+
+    return {
+      classInfo: {
+        id: classData.id,
+        name: classData.name,
+        description: classData.description,
+        teacherName: classData.teacher?.name || "N/A",
+      },
+      students: students,
+      assignments: classData.assignments,
+      grades: grades,
+    };
+  } catch (error) {
+    console.error("Failed to fetch class details:", error);
+    return null;
+  }
 }
 
 export async function generateMetadata({
@@ -71,11 +61,12 @@ export async function generateMetadata({
 }: {
   params: { id: string };
 }): Promise<Metadata> {
-  const id = params.id;
-  const classData = await getDummyClassData(id);
+  const awaitedParams = await params;
+  const id = awaitedParams.id;
+  const details = await getClassDetails(id);
   return {
-    title: classData
-      ? `${classData.name} | Learning Platform`
+    title: details?.classInfo
+      ? `${details.classInfo.name} | Learning Platform`
       : "Клас не знайдено",
   };
 }
@@ -85,11 +76,33 @@ export default async function ClassPage({
 }: {
   params: { id: string };
 }) {
-  const id = params.id;
-  const classData = await getDummyClassData(id);
+  const awaitedParams = await params;
+  const id = awaitedParams.id;
 
-  if (!classData) {
+  const session = (await getServerSession(authOptions)) as Session | null;
+
+  const details = await getClassDetails(id);
+
+  if (!details) {
     notFound();
+  }
+
+  const { classInfo, students, assignments, grades } = details;
+
+  let canEditGrades = false;
+
+  const classDataFromDb = await prisma.class.findUnique({
+    where: { id: classInfo.id },
+    select: { teacherId: true },
+  });
+  const teacherId = classDataFromDb?.teacherId;
+
+  if (
+    session?.user?.internalUserId &&
+    session.user.role === UserRole.TEACHER &&
+    session.user.internalUserId === teacherId
+  ) {
+    canEditGrades = true;
   }
 
   return (
@@ -102,10 +115,10 @@ export default async function ClassPage({
 
       <main className="p-8">
         <h1 className="text-3xl font-bold tracking-tight mb-2">
-          {classData.name}
+          {classInfo.name}
         </h1>
         <p className="text-lg text-muted-foreground mb-6">
-          Викладач: {classData.teacherName || "N/A"}
+          Викладач: {classInfo.teacherName}
         </p>
 
         <Tabs defaultValue="grades" className="w-full">
@@ -119,32 +132,32 @@ export default async function ClassPage({
 
           <TabsContent value="overview" className="mt-4 rounded-md border p-4">
             <h2 className="text-xl font-semibold mb-2">Опис Класу</h2>
-            <p>{classData.description || "Опис класу відсутній."}</p>
+            <p>{classInfo.description || "Опис класу відсутній."}</p>
           </TabsContent>
+
           <TabsContent value="students" className="mt-4 rounded-md border p-4">
             <h2 className="text-xl font-semibold mb-2">Список Студентів</h2>
-            {classData.students && classData.students.length > 0 ? (
+            {students && students.length > 0 ? (
               <ul className="list-disc pl-5">
-                {" "}
-                {classData.students.map((student) => (
-                  <li key={student.id}>{student.name}</li>
-                ))}{" "}
+                {students.map((student) => (
+                  <li key={student.id}>{student.name ?? "Ім'я не вказано"}</li>
+                ))}
               </ul>
             ) : (
               <p>Студентів не зараховано.</p>
             )}
           </TabsContent>
+
           <TabsContent
             value="assignments"
             className="mt-4 rounded-md border p-4"
           >
             <h2 className="text-xl font-semibold mb-2">Завдання</h2>
-            {classData.assignments && classData.assignments.length > 0 ? (
+            {assignments && assignments.length > 0 ? (
               <ul className="list-disc pl-5">
-                {" "}
-                {classData.assignments.map((assignment) => (
+                {assignments.map((assignment) => (
                   <li key={assignment.id}>{assignment.title}</li>
-                ))}{" "}
+                ))}
               </ul>
             ) : (
               <p>Завдань для цього класу немає.</p>
@@ -154,9 +167,11 @@ export default async function ClassPage({
           <TabsContent value="grades" className="mt-4">
             <h2 className="text-xl font-semibold mb-4">Журнал Оцінок</h2>
             <GradesTable
-              students={classData.students || []}
-              assignments={classData.assignments || []}
-              grades={classData.grades || []}
+              students={students || []}
+              assignments={assignments || []}
+              initialGrades={grades || []}
+              canEdit={canEditGrades}
+              classId={classInfo.id}
             />
           </TabsContent>
 
