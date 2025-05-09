@@ -1,137 +1,97 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition } from 'react';
 import { Button } from "@/components/ui/button";
-import { importCourseData, listClassroomCourses } from "@/server-actions/classroomActions";
-import { toast } from "sonner";
-import { Loader2 } from "lucide-react";
+import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { listClassroomCourses, importCourseData } from '@/server-actions/classroomActions';
+import { toast } from "sonner";
+import { Loader2 } from 'lucide-react';
 
-interface SimpleCourse {
-  id: string;
-  name: string | null | undefined;
+interface SimpleCourse { id: string; name: string | null | undefined; }
+
+interface ClassroomImportFormProps {
+    onImportComplete?: () => void;
 }
 
-export function ClassroomImporter() {
+export function ClassroomImportForm({ onImportComplete }: ClassroomImportFormProps) {
     const [courses, setCourses] = useState<SimpleCourse[] | null>(null);
     const [selectedCourseIds, setSelectedCourseIds] = useState<Set<string>>(new Set());
-    const [isLoading, setIsLoading] = useState(false);
-    const [isImporting, setIsImporting] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const [isFetchPending, startFetchTransition] = useTransition();
-    const [isImportPending, startImportTransition] = useTransition();
+    const [isFetching, startFetchingTransition] = useTransition();
+    const [isImporting, startImportTransition] = useTransition();
 
-    const handleFetchCourses = () => {
-        setError(null);
+    const handleFetchCourses = async () => {
         setCourses(null);
         setSelectedCourseIds(new Set());
-        setIsLoading(true);
-
-        startFetchTransition(async () => {
+        startFetchingTransition(async () => {
             const result = await listClassroomCourses();
             if (result.error) {
-                setError(result.error);
                 toast.error("Помилка отримання курсів", { description: result.error });
             } else {
                 setCourses(result.courses || []);
                 if (!result.courses || result.courses.length === 0) {
-                     toast.info("Курси не знайдено", { description: "Не знайдено курсів, де ви є викладачем." });
+                    toast.info("Курси Classroom не знайдено.");
                 } else {
-                     toast.success(`Знайдено ${result.courses.length} курс(ів).`);
+                    toast.success(`Знайдено ${result.courses.length} курс(ів).`);
                 }
             }
-            setIsLoading(false);
         });
     };
 
-    const handleCheckboxChange = (courseId: string, checked: boolean | 'indeterminate') => {
+    const handleSelectionChange = (courseId: string, checked: boolean | 'indeterminate') => {
         setSelectedCourseIds(prev => {
             const newSet = new Set(prev);
-            if (checked === true) {
-                newSet.add(courseId);
-            } else {
-                newSet.delete(courseId);
-            }
+            if (checked === true) newSet.add(courseId); else newSet.delete(courseId);
             return newSet;
         });
     };
 
-    const handleImportSelected = () => {
+    const handleImport = async () => {
         if (selectedCourseIds.size === 0) {
-            toast.warning("Не вибрано жодного курсу для імпорту.");
+            toast.warning("Не вибрано курси для імпорту.");
             return;
         }
-
-        setIsImporting(true);
-        setError(null);
-
         const idsToImport = Array.from(selectedCourseIds);
-
         startImportTransition(async () => {
-            let successCount = 0;
-            let errorCount = 0;
-
+            let successCount = 0; let errorCount = 0;
             for (const courseId of idsToImport) {
-                try {
-                    const result = await importCourseData(courseId);
-                    if (result.error) {
-                        errorCount++;
-                        toast.error(`Помилка імпорту курсу ID: ${courseId}`, { description: result.error });
-                    } else {
-                        successCount++;
-                        handleCheckboxChange(courseId, false);
-                    }
-                } catch (e) {
-                    errorCount++;
-                    toast.error(`Критична помилка імпорту курсу ID: ${courseId}`);
-                }
+                const result = await importCourseData(courseId);
+                if (result.error) { errorCount++; toast.error(`Помилка імпорту ID: ${courseId}`, { description: result.error });}
+                else { successCount++; }
             }
-
-            setIsImporting(false);
-            toast.success(`Імпорт завершено. Успішно: ${successCount}. З помилками: ${errorCount}.`);
-            setSelectedCourseIds(new Set());
-            setCourses(null);
+            toast.info(`Імпорт Classroom: Успішно ${successCount}, Помилки ${errorCount}.`);
+            if (successCount > 0 && onImportComplete) {
+                onImportComplete();
+            }
         });
     };
 
-
     return (
-        <div>
-            <Button onClick={handleFetchCourses} disabled={isLoading || isFetchPending || isImporting}>
-                {isFetchPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                {isLoading ? 'Завантаження...' : 'Отримати список курсів'}
+        <div className="space-y-4">
+            <Button onClick={handleFetchCourses} disabled={isFetching || isImporting} className="w-full">
+                {isFetching && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Отримати список курсів Classroom
             </Button>
+            {isFetching && <p className='text-sm text-center text-muted-foreground'>Завантаження списку курсів...</p>}
 
-            {courses !== null && courses.length > 0 && (
-                <div className="space-y-3">
-                    <h4 className="font-medium">Виберіть курси для імпорту:</h4>
-                    <div className="max-h-60 overflow-y-auto space-y-2 pr-2">
+            {courses && courses.length > 0 && !isFetching && (
+                <div className="space-y-3 mt-4">
+                    <Label>Виберіть курси для імпорту:</Label>
+                    <div className="max-h-40 overflow-y-auto space-y-1 pr-2 border p-2 rounded-md">
                         {courses.map(course => (
-                            <div key={course.id} className="flex items-center space-x-2 border p-2 rounded">
-                                <Checkbox
-                                    id={`course-${course.id}`}
-                                    checked={selectedCourseIds.has(course.id)}
-                                    onCheckedChange={(checked) => handleCheckboxChange(course.id, checked)}
-                                    disabled={isImporting}
-                                />
-                                <label
-                                    htmlFor={`course-${course.id}`}
-                                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                                >
-                                    {course.name || `Курс без назви (ID: ${course.id})`}
-                                </label>
+                            <div key={course.id} className="flex items-center space-x-2">
+                                <Checkbox id={`classroom-${course.id}`} checked={selectedCourseIds.has(course.id)} onCheckedChange={(checked) => handleSelectionChange(course.id, checked as boolean)} disabled={isImporting} />
+                                <Label htmlFor={`classroom-${course.id}`} className="text-sm font-medium leading-none cursor-pointer">{course.name || `Курс (ID: ${course.id})`}</Label>
                             </div>
                         ))}
                     </div>
-                     <Button onClick={handleImportSelected} disabled={selectedCourseIds.size === 0 || isImportPending || isLoading}>
-                         {isImportPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                         Імпортувати вибрані ({selectedCourseIds.size})
-                     </Button>
+                    <Button onClick={handleImport} disabled={selectedCourseIds.size === 0 || isImporting || isFetching} className="w-full">
+                        {isImporting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Імпортувати вибрані ({selectedCourseIds.size})
+                    </Button>
                 </div>
             )}
-             {courses !== null && courses.length === 0 && (
-                 <p className="text-muted-foreground">Не знайдено курсів, де ви є викладачем.</p>
-             )}
+            {courses && courses.length === 0 && !isFetching && (<p className="text-muted-foreground text-center text-sm mt-2">Курси Classroom не знайдено.</p> )}
         </div>
     );
 }

@@ -76,7 +76,7 @@ const authOptions: NextAuthOptions = {
               name: userWithGoogleId.name,
               image: userWithGoogleId.image,
               googleUserId: profile.sub,
-              role: UserRole.STUDENT,
+              role: UserRole.TEACHER, // or STUDENT
             },
             select: { id: true, role: true },
           });

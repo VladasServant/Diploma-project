@@ -24,6 +24,7 @@ interface Student {
   id: string;
   name: string | null;
 }
+
 interface Assignment {
   id: string;
   title: string;

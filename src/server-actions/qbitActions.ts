@@ -1,16 +1,22 @@
 "use server";
 
 import * as cheerio from "cheerio";
+import { prisma } from '@/lib/prisma';
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import type { Session } from "next-auth";
+import { UserRole } from "@prisma/client";
+import { revalidatePath } from 'next/cache';
 
 export interface QBitScoreResults {
-  taskTitle: string;
+  taskIdentifier: string;
   score: string;
 }
 
 export interface QBitResults {
   rank: string;
   studentName: string;
-  taskScore: QBitScoreResults[];
+  taskScores: QBitScoreResults[];
   totalScore: string;
 }
 
@@ -49,7 +55,7 @@ export async function scrapeQBitStandings(
     if (table.length === 0) {
       return {
         error:
-          "Не знайдено таблицю результатів (#standingstable) на сторінці Q-bit.",
+          "Не знайдено таблицю результатів (#standingstable) на сторінці Q-Bit.",
       };
     }
 
@@ -73,12 +79,11 @@ export async function scrapeQBitStandings(
           headerTaskTitles.push(
             cleanedTitle && cleanedTitle !== "-" && cleanedTitle !== "="
               ? cleanedTitle
-              : `Завдання ${i + 1}`
+              : `Завдання ${ i + 1 }`,
           );
         });
       }
     }
-    console.log("Визначені заголовки завдань з Q-bit:", headerTaskTitles);
 
     const dataRows = table.find("tbody tr");
     (dataRows.length ? dataRows : table.find("tr")).each(
@@ -106,37 +111,157 @@ export async function scrapeQBitStandings(
           const individualScoresRaw = rowDataText.slice(2, -1);
           const totalScore = rowDataText[rowDataText.length - 1];
 
-          const taskScore: QBitScoreResults[] = [];
+          const taskScores: QBitScoreResults[] = [];
           const numTasks =
             headerTaskTitles.length > 0
               ? headerTaskTitles.length
               : individualScoresRaw.length;
 
           for (let i = 0; i < numTasks; i++) {
-            taskScore.push({
-              taskTitle: headerTaskTitles[i] || `Завдання ${i + 1}`,
+            taskScores.push({
+              taskIdentifier: headerTaskTitles[i] || `Завдання ${i + 1}`,
               score: individualScoresRaw[i] || "-",
-            });
+            }); 
           }
 
           results.push({
             rank,
             studentName,
-            taskScore,
+            taskScores,
             totalScore,
           });
         }
       }
     );
 
+    // Сортування по імені студенту за алфавітом
+    // results.sort((a, b) => {
+    //   return a.studentName.localeCompare(b.studentName, 'uk');
+    // });
+
     return {
       data: results,
       taskTitles: headerTaskTitles.length > 0 ? headerTaskTitles : undefined,
     };
   } catch (error: any) {
-    console.error("Failed to fetch or parse Q-bit data:", error);
+    console.error("Failed to fetch or parse Q-Bit data:", error);
     return {
-      error: `Помилка отримання або обробки даних з Q-bit: ${error.message}`,
+      error: `Помилка отримання або обробки даних з Q-Bit: ${error.message}`,
     };
+  }
+}
+
+export async function saveQbitDataToDb(
+  cid: string,
+  scrapedData: QBitResults[],
+  taskTitles: string[],
+  qbitCourseNameProvided?: string
+): Promise<{ success?: boolean; message?: string; error?: string; classId?: string }> {
+
+  const session = await getServerSession(authOptions) as Session | null;
+  if (!session?.user?.internalUserId) {
+      return { error: "Користувач не авторизований." };
+  }
+  const importerInternalUserId = session.user.internalUserId;
+  const importerRole = session.user.role;
+
+  if (importerRole !== UserRole.TEACHER && importerRole !== UserRole.ADMIN) {
+      return { error: "Недостатньо прав для імпорту та збереження даних." };
+  }
+
+  const courseName = qbitCourseNameProvided || `Q-Bit Турнір (cid: ${cid})`;
+  let newOrUpdatedClassId: string | undefined = undefined;
+
+  try {
+      await prisma.$transaction(async (tx) => {
+          const classInDb = await tx.class.upsert({
+              where: { qbitCid: cid },
+              update: {
+                  name: courseName,
+                  description: `Дані імпортовано з Q-Bit standings, cid: ${cid}`,
+                  sourcePlatform: "QBIT",
+              },
+              create: {
+                  name: courseName,
+                  description: `Дані імпортовано з Q-Bit standings, cid: ${cid}`,
+                  teacherId: importerInternalUserId,
+                  qbitCid: cid,
+                  sourcePlatform: "QBIT",
+              }
+          });
+          newOrUpdatedClassId = classInDb.id;
+
+          const assignmentMap = new Map<string, string>();
+          for (const taskIdentifier of taskTitles) {
+              if (!taskIdentifier) continue;
+              const assignmentInDb = await tx.assignment.upsert({
+                where: {
+                    classId_qbitTaskIdentifier: { 
+                        classId: newOrUpdatedClassId!,
+                        qbitTaskIdentifier: taskIdentifier
+                    }
+                  },
+                  update: { title: taskIdentifier },
+                    create: {
+                        title: taskIdentifier,
+                        classId: newOrUpdatedClassId!,
+                        qbitTaskIdentifier: taskIdentifier,
+                    }
+              });
+              assignmentMap.set(taskIdentifier, assignmentInDb.id);
+          }
+          const totalScoreAssignment = await tx.assignment.upsert({
+               where: { 
+                   classId_qbitTaskIdentifier: {
+                       classId: newOrUpdatedClassId!, 
+                       qbitTaskIdentifier: "Q-Bit Підсумок",
+                   }
+               },
+               update: {},
+               create: { title: "Q-Bit Підсумок", classId: newOrUpdatedClassId!, qbitTaskIdentifier: "Q-Bit Підсумок" }
+          });
+
+          for (const studentData of scrapedData) {
+              let studentInDb = await tx.user.findFirst({ where: { name: studentData.studentName } });
+              if (!studentInDb) {
+                  studentInDb = await tx.user.create({ data: { name: studentData.studentName, role: UserRole.STUDENT } });
+              }
+              const internalStudentId = studentInDb.id;
+
+              await tx.studentEnrollment.upsert({
+                  where: { classId_studentId: { classId: newOrUpdatedClassId!, studentId: internalStudentId } },
+                  update: {}, create: { classId: newOrUpdatedClassId!, studentId: internalStudentId }
+              });
+
+              for (const taskScore of studentData.taskScores) {
+                  const internalAssignmentId = assignmentMap.get(taskScore.taskIdentifier);
+                  if (internalAssignmentId && taskScore.score && taskScore.score !== '-') {
+                      await tx.grade.upsert({
+                          where: { studentId_assignmentId: { studentId: internalStudentId, assignmentId: internalAssignmentId } },
+                          update: { gradeValue: taskScore.score },
+                          create: { studentId: internalStudentId, assignmentId: internalAssignmentId, gradeValue: taskScore.score }
+                      });
+                  }
+              }
+              if (studentData.totalScore && studentData.totalScore !== '-') {
+                   await tx.grade.upsert({
+                      where: { studentId_assignmentId: { studentId: internalStudentId, assignmentId: totalScoreAssignment.id } },
+                      update: { gradeValue: studentData.totalScore },
+                      create: { studentId: internalStudentId, assignmentId: totalScoreAssignment.id, gradeValue: studentData.totalScore }
+                  });
+              }
+          }
+      }, { timeout: 120000, maxWait: 20000 });
+
+      if (newOrUpdatedClassId) {
+          revalidatePath('/');
+          revalidatePath(`/class-page/${newOrUpdatedClassId}`);
+      }
+
+      return { success: true, message: `Дані для Q-Bit турніру "${courseName}" (cid: ${cid}) успішно збережено.`, classId: newOrUpdatedClassId };
+
+  } catch (error: any) {
+      console.error("Failed to save Q-Bit data to DB:", error);
+      return { error: `Помилка збереження даних Q-Bit: ${error.message}` };
   }
 }

@@ -290,8 +290,8 @@ export async function importCourseData(
         };
       },
       {
-        maxWait: 10000,
-        timeout: 30000,
+        maxWait: 20000,
+        timeout: 60000,
       }
     );
 

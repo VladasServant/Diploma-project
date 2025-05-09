@@ -29,9 +29,10 @@ model User {
   teachingClasses Class[]             @relation("TeacherToClass")
   enrolledClasses StudentEnrollment[]
   grades          Grade[]
-  notifications   Notification[]
   Account         Account[]
   Session         Session[]
+
+  linkedClassGroups LinkedClassGroup[]
 }
 
 model Class {
@@ -42,12 +43,16 @@ model Class {
   teacher     User    @relation("TeacherToClass", fields: [teacherId], references: [id])
 
   googleClassroomId String? @unique
+  qbitCid String? @unique
+  sourcePlatform String? 
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   enrollments StudentEnrollment[]
   assignments Assignment[]
+
+  linkedGroups ClassLink[]
 }
 
 model StudentEnrollment {
@@ -72,6 +77,8 @@ model Assignment {
   class       Class     @relation(fields: [classId], references: [id], onDelete: Cascade)
 
   googleAssignmentId String? @unique
+  qbitTaskIdentifier String?
+  @@unique([classId, qbitTaskIdentifier])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -97,14 +104,25 @@ model Grade {
   @@unique([studentId, assignmentId])
 }
 
-model Notification {
-  id        String   @id @default(cuid())
-  userId    String
-  message   String
-  read      Boolean  @default(false)
-  createdAt DateTime @default(now())
+model LinkedClassGroup {
+  id        String    @id @default(cuid())
+  name      String    
+  userId    String    
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  classLinks ClassLink[] 
+}
+
+model ClassLink {
+  id        String @id @default(cuid())
+  groupId   String 
+  classId   String 
+
+  group LinkedClassGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  class Class            @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, classId])
 }
 
 model Account {
